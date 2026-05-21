@@ -144,6 +144,28 @@ def _addressee(child_name: str) -> str:
     return f"우리 {given}{_vocative_marker(given)}"
 
 
+def _topic_form(name: str) -> str:
+    """Korean topic-marker-compatible nickname.
+
+    The native parent-speech pattern is ``{name}이`` + topic marker (``하린이가``)
+    for consonant-final names, and plain ``{name}`` + topic marker (``유주가``)
+    for vowel-final names. Hardcoded `{given}이` in prompts produced wrong forms
+    like ``유주이가`` / ``유주이를`` and broke the model's downstream vocative
+    too (``유주이야``). This helper restores the rule: append ``이`` ONLY when
+    the syllable has 받침.
+
+    Hangul check: anything not in the syllable block (e.g. ``Anna``) is passed
+    through as-is — Latin names don't take the ``이`` filler at all.
+    """
+    if not name:
+        return ""
+    last = name[-1]
+    if not ("가" <= last <= "힣"):
+        return name
+    jongseong = (ord(last) - 0xAC00) % 28
+    return name + ("이" if jongseong != 0 else "")
+
+
 def _strip_lead_meta(text: str) -> str:
     """Drop leading lines that restate the task instead of answering it.
 
@@ -477,6 +499,14 @@ class NotionMirror:
         self.strip_exif_gps = strip_exif_gps
         self.session = session or requests.Session()
         self.timeout = timeout
+        # When True, skip the 3 per-alimnota LLM callouts (💭 요약 /
+        # 🧒 자녀 일기 / 👨‍👩‍👧 부모 편지). Used by the --no-llm /
+        # DISABLE_ALL_LLM master toggle: operators who want plain
+        # backup + statistical dashboards only (graduate backups,
+        # privacy-conscious operators, etc.) flip this on. The 4 LLM
+        # dashboards still need to be skipped separately via their
+        # own toggles — fetch.py wires both at the same time.
+        self.disable_llm_callouts: bool = False
         # Resolved on first use via `_resolve_schema()`.
         self._prop_title: str | None = None
         self._prop_report_id: str | None = None
@@ -758,6 +788,40 @@ class NotionMirror:
             "paragraph": {"rich_text": [rt]},
         }
 
+    @staticmethod
+    def _ai_toggle(
+        title: str,
+        *,
+        content: str,
+        emoji: str,
+        color: str,
+    ) -> dict[str, Any]:
+        """Wrap an AI-generated callout in a collapsed-by-default toggle.
+
+        Notion ``toggle`` blocks render the children area hidden until the
+        user clicks ▶, which is exactly the "default-hide, expand-to-see"
+        UX requested for the AI gloss. Toggle title carries the emoji +
+        "AI 가공 — 펼치기" label so readers see at a glance what category
+        of AI content sits inside without expanding. The inner callout
+        keeps its original color/emoji for consistency with prior versions.
+        """
+        return {
+            "object": "block",
+            "type": "toggle",
+            "toggle": {
+                "rich_text": [{"type": "text", "text": {"content": title}}],
+                "children": [{
+                    "object": "block",
+                    "type": "callout",
+                    "callout": {
+                        "rich_text": [{"type": "text", "text": {"content": content}}],
+                        "icon": {"type": "emoji", "emoji": emoji},
+                        "color": color,
+                    },
+                }],
+            },
+        }
+
     def _build_children(
         self,
         report: dict[str, Any],
@@ -787,46 +851,41 @@ class NotionMirror:
 
         # LLM-driven callouts (only when Ollama available). Skipped gracefully
         # when no LLM is reachable so non-LLM users still get a clean page.
+        # Also skipped wholesale when the operator opted out via --no-llm /
+        # DISABLE_ALL_LLM (plain backup + stats mode).
+        #
+        # Each AI callout is wrapped in a collapsed-by-default toggle so the
+        # page opens to "original alimnota first, AI on demand". Notion
+        # `toggle` blocks render the children area collapsed until the user
+        # clicks ▶, which exactly matches the UX requested 2026-05-21:
+        # default-hide, expand-to-see. Operators who don't trust the AI
+        # output (졸업생 백업, 사생활 보수적, etc.) can simply never expand
+        # them; operators who like the AI gloss expand them.
         body_for_summary = (report.get("content") or "").strip()
         cname = report.get("child_name") or ""
-        if body_for_summary:
+        if body_for_summary and not self.disable_llm_callouts:
             oneliner = self._summary_oneliner(body_for_summary)
             if oneliner:
-                blocks.append({
-                    "object": "block",
-                    "type": "callout",
-                    "callout": {
-                        "rich_text": [{"type": "text", "text": {"content": oneliner}}],
-                        "icon": {"type": "emoji", "emoji": "💭"},
-                        "color": "purple_background",
-                    },
-                })
+                blocks.append(self._ai_toggle(
+                    "💭 본문 요약 (AI 가공 — 펼치기)",
+                    content=oneliner, emoji="💭", color="purple_background",
+                ))
             # Child first-person diary
             child_diary = self._child_voice_diary(body_for_summary, cname)
             if child_diary:
-                blocks.append({
-                    "object": "block",
-                    "type": "callout",
-                    "callout": {
-                        "rich_text": [{"type": "text", "text": {"content": child_diary}}],
-                        "icon": {"type": "emoji", "emoji": "🧒"},
-                        "color": "yellow_background",
-                    },
-                })
+                blocks.append(self._ai_toggle(
+                    "🧒 자녀의 일기 (AI 가공 — 펼치기)",
+                    content=child_diary, emoji="🧒", color="yellow_background",
+                ))
             # Parent diary (imagined; works whether the report itself was
             # parent- or teacher-written — kidsnote shows the alimnota to
             # the family either way).
             parent_diary = self._parent_voice_diary(body_for_summary, cname)
             if parent_diary:
-                blocks.append({
-                    "object": "block",
-                    "type": "callout",
-                    "callout": {
-                        "rich_text": [{"type": "text", "text": {"content": parent_diary}}],
-                        "icon": {"type": "emoji", "emoji": "👨‍👩‍👧"},
-                        "color": "pink_background",
-                    },
-                })
+                blocks.append(self._ai_toggle(
+                    "👨‍👩‍👧 부모의 편지 (AI 가공 — 펼치기)",
+                    content=parent_diary, emoji="👨‍👩‍👧", color="pink_background",
+                ))
 
         # Weather callout — only for teacher/admin posts (kidsnote auto-fills
         # weather on parent posts too, which would be misleading) and only
@@ -1148,6 +1207,7 @@ class NotionMirror:
         if not text or len(text.strip()) < 30:
             return None
         given = _given_name(child_name) or "아이"
+        topic = _topic_form(given)  # 하린→하린이 / 유주→유주
         prompt = (
             f"다음 어린이집 알림장을 자녀({given})의 1인칭 일기로 "
             "한국어 2-3문장으로 바꿔쓰세요. ``나``가 주어가 되어야 하고, "
@@ -1157,12 +1217,12 @@ class NotionMirror:
             "메타 설명(``아래와 같이 변환해 드릴게요`` 등) 절대 금지 — "
             "바로 일기 본문만 답하세요.\n\n"
             "[예시 1 — 선생님 작성]\n"
-            f"알림장: {given}이는 친구에게 장난감을 건네주며 사회성이 "
+            f"알림장: {topic}는 친구에게 장난감을 건네주며 사회성이 "
             "자라는 모습이었습니다.\n"
             "일기: 오늘 친구한테 내 장난감을 줬어. 친구가 좋아하니까 "
             "나도 기분이 좋았어!\n\n"
             "[예시 2 — 부모 작성]\n"
-            f"알림장: {given}이는 어제 잘 놀고 잘 먹었습니다. 콧물이 좀 났어요.\n"
+            f"알림장: {topic}는 어제 잘 놀고 잘 먹었습니다. 콧물이 좀 났어요.\n"
             "일기: 어제 잘 놀고 밥도 잘 먹었어! 콧물이 좀 나서 답답했지만 괜찮아.\n\n"
             "[지금 변환할 알림장]\n"
             f"알림장: {text[:1200]}\n"
@@ -1185,12 +1245,13 @@ class NotionMirror:
             return None
         addressee = _addressee(child_name)
         given = _given_name(child_name) or "아이"
+        topic = _topic_form(given)  # 하린→하린이 / 유주→유주
         prompt = (
             f"부모가 자녀({given})에게 쓰는 짧은 편지. 알림장에 나온 "
             "그날의 실제 사건 1-2개를 구체적으로 언급하면서, 자녀가 자라서 "
             "이 편지를 봤을 때 부모의 사랑이 전해지게 써. 2-3문장, 한국어.\n\n"
             "[예시]\n"
-            f"알림장: {given}이는 친구에게 장난감을 건네주며 사회성이 "
+            f"알림장: {topic}는 친구에게 장난감을 건네주며 사회성이 "
             "자라는 모습을 보였습니다. ``동물농장`` 노래에 박수를 쳤어요.\n"
             f"편지: {addressee}, 오늘 친구에게 장난감을 양보했다는 얘기를 "
             "들었어. 엄마는 네가 친구를 아끼는 마음이 자라는 모습이 "
@@ -1210,6 +1271,13 @@ class NotionMirror:
         """One-sentence body summary using Ollama (LLM). Returns None when
         no Ollama server is reachable (caller should just skip the summary
         callout in that case).
+
+        Prompt is content-agnostic (어린이집 / 유치원 / 어학원 모두 커버)
+        and explicitly bars Chinese characters — earlier prompt that said
+        "어린이집 알림장" tripped the model into Chinese-leaning output
+        when the actual content was an English-academy class report
+        ("운동好处讨论..."). CJK leak still gets filtered downstream as a
+        backstop, but addressing it at the prompt level is cleaner.
         """
         if not text or len(text.strip()) < 20:
             return None
@@ -1217,9 +1285,12 @@ class NotionMirror:
         if cfg is None:
             return None
         prompt = (
-            "다음 어린이집 알림장 본문을 한 문장(40자 이내)으로 요약해. "
-            "활동·식사·기분 등 중요한 내용만 자연스럽게. "
-            "다른 설명 없이 요약문만 한 줄로 답해.\n\n"
+            "다음 키즈노트 게시글 본문을 한국어 한 문장(40자 이내)으로 "
+            "요약해. 활동·내용·중요 정보만 자연스럽게.\n\n"
+            "**규칙**:\n"
+            "① 반드시 한국어만 사용 — 중국어 한자(汉字) 절대 금지\n"
+            "② 본문에 영어 단어가 있어도 요약은 한국어로\n"
+            "③ 다른 설명·서두 없이 요약 한 줄만 답해\n\n"
             f"본문: {text[:1500]}\n\n요약:"
         )
         try:
@@ -2887,12 +2958,13 @@ class NotionMirror:
             if len(joined.strip()) < 200:
                 continue
             given = _given_name(child_name) or "아이"
+            topic = _topic_form(given)  # 하린→하린이 / 유주→유주
             prompt = (
-                f"다음은 어린이집 {given}이의 {ym} 한 달치 알림장 모음입니다.\n\n"
+                f"다음은 어린이집 {topic}의 {ym} 한 달치 알림장 모음입니다.\n\n"
                 "이 알림장들의 내용만 사용해서 그 달의 성장 스토리를 "
                 "한 단락(3-4문장)으로 작성하세요. 알림장에 실제 등장한 "
                 f"사건·활동·관찰 2-3개를 구체적으로 인용해야 합니다. "
-                f"자녀는 ``{given}이``로만 지칭하세요.\n\n"
+                f"자녀는 ``{topic}``로만 지칭하세요.\n\n"
                 "**규칙**:\n"
                 "① 한국어만 사용 (중국어 한자 금지)\n"
                 "② 알림장에 나오지 않은 사건·활동을 추가하지 마세요\n"
@@ -2991,6 +3063,7 @@ class NotionMirror:
                 continue
             date = (r.get("date_written") or "")[:10]
             given = _given_name(child_name) or "아이"
+            topic = _topic_form(given)  # 하린→하린이 / 유주→유주
             prompt = (
                 f"다음 어린이집 알림장에서 자녀({given})의 발달·성장 "
                 "단서를 명사구 한 줄(20자 이내)로 뽑아. "
@@ -2998,7 +3071,7 @@ class NotionMirror:
                 "``~요``, ``~습니다``, ``~보였습니다`` 같은 종결어미 "
                 "절대 금지. ② 단서가 정말 없으면 ``없음``만 답해.\n\n"
                 "[예시 — 명사구 형식 ✓]\n"
-                f"알림장: {given}이가 친구에게 장난감을 건네주며 사회성이 "
+                f"알림장: {topic}가 친구에게 장난감을 건네주며 사회성이 "
                 "자라는 모습을 보였습니다.\n"
                 "단서: 친구에게 장난감 양보\n\n"
                 f"알림장: ``동물농장`` 노래에 손을 흔들고 박수를 치며 "
@@ -3153,18 +3226,19 @@ class NotionMirror:
             for r in teacher_reports
         )[:1500]
         given = _given_name(child_name) or "아이"
+        topic = _topic_form(given)  # 하린→하린이 / 유주→유주
         prompt = (
             f"다음은 어린이집 선생님이 자녀({given})에 대해 1년간 쓴 "
             "알림장의 짧은 발췌야. 이를 바탕으로 부모가 선생님께 보낼 "
             "감사 편지(4-5문장)를 한국어로 써. 발췌에 실제 등장한 활동·"
             "에피소드 2-3개를 구체적으로 언급해.\n\n"
             "[예시]\n"
-            f"발췌:\n- {given}이가 친구에게 장난감을 양보함\n"
+            f"발췌:\n- {topic}가 친구에게 장난감을 양보함\n"
             "- ``동물농장`` 노래에 박수\n- 송편 만들기에 참여\n"
-            f"편지: 선생님, 한 해 동안 우리 {given}이를 사랑으로 돌봐주셔서 "
+            f"편지: 선생님, 한 해 동안 우리 {topic}를 사랑으로 돌봐주셔서 "
             "진심으로 감사드립니다. 친구에게 장난감을 양보하는 사회성도, "
             "``동물농장`` 노래에 박수를 치는 즐거움도, 송편을 만져보던 "
-            f"낯선 촉감의 기억까지, 모두 선생님 덕분에 우리 {given}이의 "
+            f"낯선 촉감의 기억까지, 모두 선생님 덕분에 우리 {topic}의 "
             "소중한 한 해가 되었습니다. 따뜻한 손길 잊지 않겠습니다.\n\n"
             "[지금 작성할 감사 편지]\n"
             f"발췌:\n{joined}\n"

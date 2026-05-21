@@ -593,14 +593,23 @@ def main(argv: list[str] | None = None) -> int:
                     help="Skip center-wide notice sync.")
     ap.add_argument("--no-albums", action="store_true",
                     help="Skip photo album sync.")
-    # ---- LLM dashboard toggles -----
-    # Originally all 4 dashboards (📖 성장 스토리 / 🌟 마일스톤 / 🌱 분기 관심사
-    # / 💌 감사 카드) ran unconditionally when Ollama was reachable. For
-    # graduate-backup operators that's a poor fit: the LLM (a) sometimes mis-
-    # conjugates vocatives (e.g. "유주이야" for vowel-final names where the
-    # "이" suffix doesn't apply), and (b) costs ~1.5h of Ollama time per run.
-    # Each toggle skips one dashboard so operators can keep the parts they
-    # want and drop the parts that read awkwardly post-graduation.
+    # ---- LLM toggles -----
+    # The script can be split into two layers of LLM-driven content:
+    #   1. Per-alimnota inline callouts: 💭 요약 / 🧒 자녀의 일기 /
+    #      👨‍👩‍👧 부모의 편지 (3 LLM calls × every report).
+    #   2. Four standalone dashboard pages: 📖 매월 성장 스토리 / 🌟 마일스톤
+    #      / 🌱 분기 관심사 / 💌 선생님께 감사 카드.
+    # `--no-llm` (or DISABLE_ALL_LLM=true) flips BOTH layers off in one shot,
+    # producing a plain backup + the 3 statistical dashboards (📊 통계 /
+    # 📅 추억 / 🥗 영양) that don't need LLM. Graduate-backup operators and
+    # privacy-conscious users typically want this. The 4 individual
+    # dashboard toggles are still available for fine-grained tuning when
+    # only some of the dashboards read awkwardly.
+    ap.add_argument("--no-llm", action="store_true",
+                    help="Plain backup + statistical dashboards only. Skips ALL "
+                         "AI-generated content: alimnota callouts (요약/자녀일기/"
+                         "부모편지) AND the 4 LLM dashboards. Equivalent to setting "
+                         "DISABLE_ALL_LLM=true.")
     ap.add_argument("--no-growth-story", action="store_true",
                     help="Skip 📖 매월 성장 스토리 (LLM-written paragraph per month).")
     ap.add_argument("--no-milestones", action="store_true",
@@ -655,6 +664,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sess = _load_session_from_browser(args.browser)
 
+    # ---- Resolve LLM master toggle once, used in two places ----
+    # CLI flag wins; env var (= workflow input passthrough) is the fallback.
+    # When the master is on, the per-alimnota callouts AND every LLM
+    # dashboard get short-circuited — see below.
+    disable_all_llm = args.no_llm or _truthy(_resolve_secret(env, "DISABLE_ALL_LLM"))
+
     # ---- Notion mirror setup (if requested) -----
     mirror = None
     skip_ids: set[int] = set()
@@ -669,6 +684,15 @@ def main(argv: list[str] | None = None) -> int:
                 "Set them in .env (local) or as repo secrets (GitHub Actions)."
             )
         mirror = NotionMirror(token=token, database_id=db_id)
+        # Master switch: propagate to the mirror so per-alimnota callouts
+        # (요약 / 자녀일기 / 부모편지) are skipped during publishing.
+        if disable_all_llm:
+            mirror.disable_llm_callouts = True
+            _LOGGER.info(
+                "🚫 --no-llm / DISABLE_ALL_LLM is ON — alimnota AI callouts and "
+                "the 4 LLM dashboards will all be skipped (plain backup + "
+                "statistical dashboards only)."
+            )
         try:
             page_map = mirror.existing_report_page_map()
             if args.force_refresh:
@@ -1098,10 +1122,11 @@ def main(argv: list[str] | None = None) -> int:
         # independent because graduate-backup operators reported the
         # 💌 감사 카드 and 📖 성장 스토리 read awkwardly due to vocative
         # errors, while 🌟 마일스톤 / 🌱 관심사 are statistical and read fine.
-        skip_growth = args.no_growth_story or _truthy(_resolve_secret(env, "DISABLE_GROWTH_STORY"))
-        skip_milestones = args.no_milestones or _truthy(_resolve_secret(env, "DISABLE_MILESTONES"))
-        skip_interests = args.no_interests or _truthy(_resolve_secret(env, "DISABLE_INTERESTS"))
-        skip_thanks = args.no_teacher_thanks or _truthy(_resolve_secret(env, "DISABLE_TEACHER_THANKS"))
+        # The master --no-llm toggle short-circuits all four at once.
+        skip_growth = disable_all_llm or args.no_growth_story or _truthy(_resolve_secret(env, "DISABLE_GROWTH_STORY"))
+        skip_milestones = disable_all_llm or args.no_milestones or _truthy(_resolve_secret(env, "DISABLE_MILESTONES"))
+        skip_interests = disable_all_llm or args.no_interests or _truthy(_resolve_secret(env, "DISABLE_INTERESTS"))
+        skip_thanks = disable_all_llm or args.no_teacher_thanks or _truthy(_resolve_secret(env, "DISABLE_TEACHER_THANKS"))
 
         # Group by month + quarter
         from collections import defaultdict

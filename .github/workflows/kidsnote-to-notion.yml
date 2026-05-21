@@ -49,13 +49,26 @@ on:
         description: "Pick a specific child by name substring (e.g. '유주'). Leave empty for single-child accounts or to use the first child."
         required: false
         default: ""
-      # ---- AI letter / LLM dashboard toggles ----
-      # The four LLM-driven Notion pages (📖 성장 스토리, 🌟 마일스톤,
-      # 🌱 분기 관심사, 💌 선생님께 감사 카드) sometimes read awkwardly
-      # — most notably the vocative form for vowel-final names gets
-      # mis-conjugated. Graduate-backup operators can opt out of any
-      # subset; the statistical dashboards (📊 통계 / 📅 추억 / 🥗 영양)
-      # are unaffected.
+      # ---- AI master toggle: plain backup + statistical dashboards only ----
+      # Easiest way to opt out of every AI-generated thing in one click.
+      # When ON, the 3 per-alimnota callouts (요약/자녀일기/부모편지) AND
+      # the 4 LLM dashboards are ALL skipped. The 3 statistical dashboards
+      # (📊 통계 / 📅 추억 / 🥗 영양) still get generated because they're
+      # not LLM-based. Useful for graduate backups, privacy-conscious
+      # operators, or anyone who prefers a clean "just the original
+      # alimnota text + photos + stats" mirror.
+      disable_all_llm:
+        description: "AI 가공 통째로 끄기 (단순 백업 + 📊 📅 🥗 통계 페이지만 생성)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+      # ---- AI letter / LLM dashboard fine-grained toggles ----
+      # If you only want to drop *some* of the 4 LLM dashboards (and keep
+      # the per-alimnota callouts), use these individually. The master
+      # toggle above takes precedence — if `disable_all_llm=true`, these
+      # don't matter.
       disable_growth_story:
         description: "Skip 📖 매월 성장 스토리"
         required: false
@@ -132,14 +145,19 @@ jobs:
       # like "느껴지게" verbatim into output, (c) returning "없음" for
       # every milestone candidate. llama3.1 has stronger
       # instruction-following for the role-transformation tasks here.
+      #
+      # When `disable_all_llm=true`, both steps below are skipped so
+      # AI-opt-out runs don't pay the ~5min model-pull cost.
       - name: Cache Ollama models
         id: ollama-cache
+        if: ${{ inputs.disable_all_llm != 'true' }}
         uses: actions/cache@v4
         with:
           path: ~/.ollama
           key: ollama-llama3.1-8b-v1
 
       - name: Install Ollama + pull model
+        if: ${{ inputs.disable_all_llm != 'true' }}
         run: |
           if ! command -v ollama >/dev/null 2>&1; then
             curl -fsSL https://ollama.com/install.sh | sh
@@ -173,6 +191,7 @@ jobs:
           # default for accounts that always want the same non-first child;
           # the workflow input takes precedence at runtime when set.
           KIDSNOTE_CHILD_NAME: ${{ inputs.child_name }}
+          DISABLE_ALL_LLM: ${{ inputs.disable_all_llm }}
           DISABLE_GROWTH_STORY: ${{ inputs.disable_growth_story }}
           DISABLE_MILESTONES: ${{ inputs.disable_milestones }}
           DISABLE_INTERESTS: ${{ inputs.disable_interests }}
