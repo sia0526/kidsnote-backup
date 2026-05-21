@@ -257,6 +257,20 @@ def _strip_cjk(text: str) -> tuple[str, int]:
     """
     if not text:
         return text, 0
+    # Fullwidth / CJK punctuation that leaked into Korean parent-letter
+    # output during 2026-05-22 review (e.g. `"운동은 심장에。"`). U+3002
+    # is the Japanese/Chinese full stop; the rest are common companions
+    # the same models drop into Korean text.
+    _FULLWIDTH_PUNCT = {
+        "、": ", ",   # 、 ideographic comma
+        "。": ". ",   # 。 ideographic full stop
+        "，": ", ",   # ， fullwidth comma
+        "．": ". ",   # ． fullwidth period
+        "：": ": ",   # ： fullwidth colon
+        "；": "; ",   # ； fullwidth semicolon
+        "！": "! ",   # ！ fullwidth exclamation
+        "？": "? ",   # ？ fullwidth question
+    }
     removed = 0
     out_chars: list[str] = []
     for ch in text:
@@ -270,8 +284,16 @@ def _strip_cjk(text: str) -> tuple[str, int]:
         )
         if is_cjk:
             removed += 1
-        else:
-            out_chars.append(ch)
+            continue
+        # Fullwidth punctuation: substitute the ASCII equivalent so the
+        # sentence still reads naturally instead of just being deleted.
+        # These don't count toward `removed` (they get replaced, not lost),
+        # so the >20% Chinese-leak guard doesn't fire on a punctuation-only
+        # leak.
+        if ch in _FULLWIDTH_PUNCT:
+            out_chars.append(_FULLWIDTH_PUNCT[ch])
+            continue
+        out_chars.append(ch)
     return "".join(out_chars), removed
 
 
@@ -1243,7 +1265,26 @@ class NotionMirror:
             out = " ".join(out.split())
         if len(out) < 5:
             return None
-        return out[:max_chars]
+        # Truncate cleanly at sentence boundary so the last sentence isn't
+        # mid-cut. Previously a parent-letter callout shipped truncated as
+        # "...아무래도 네가 이 편" (literal "the letter" mid-word). Now
+        # the cap finds the last terminator within max_chars and ends there.
+        if len(out) > max_chars:
+            out = out[:max_chars]
+            terminators = [".", "!", "?", "다.", "요.", "야.", "지.",
+                           "니다", "어요", "해요", "야!", "지!"]
+            best = -1
+            for t in terminators:
+                idx = out.rfind(t)
+                if idx > best:
+                    # If the terminator's text spans more than one char, push
+                    # the cut to include the whole terminator.
+                    best = idx + len(t) - 1
+            # Require at least half the budget to be present (avoid an empty
+            # output when no terminator was found).
+            if best >= max_chars // 2:
+                out = out[: best + 1]
+        return out
 
     @classmethod
     def _child_voice_diary(cls, text: str, child_name: str = "") -> str | None:
@@ -1259,12 +1300,20 @@ class NotionMirror:
         topic = _topic_form(given)  # 하린→하린이 / 유주→유주
         prompt = (
             f"다음 어린이집 알림장을 자녀({given})의 1인칭 일기로 "
-            "한국어 2-3문장으로 바꿔쓰세요. ``나``가 주어가 되어야 하고, "
-            "선생님 호칭(``어머니~``, ``선생님께`` 등)은 절대 쓰지 마세요. "
-            "알림장이 부모가 쓴 글이어도(예: ``하린이는 어제 잘 놀았어요``) "
-            "똑같이 어린이 1인칭(``어제 잘 놀았어``)으로 변환하세요. "
-            "메타 설명(``아래와 같이 변환해 드릴게요`` 등) 절대 금지 — "
-            "바로 일기 본문만 답하세요.\n\n"
+            "한국어 2-3문장으로 바꿔쓰세요.\n\n"
+            "**규칙 (반드시 지킬 것)**:\n"
+            "① ``나``가 주어. 선생님 호칭(``어머니~``, ``선생님께`` 등) 금지.\n"
+            "② **환각 절대 금지**: 알림장 본문에 등장하지 않은 사건·활동·"
+            "동물·사람·장소·물건 이름을 만들어내지 마세요. 본문에 적힌 "
+            "사실만 1인칭으로 바꿔쓰세요. "
+            "(예: 본문에 ``공원``이 없으면 ``공원에서 놀았어`` 금지)\n"
+            "③ 본문이 영어 단어(``swimming``, ``exercise`` 등)를 포함해도 "
+            "일기는 한국어로 의역하세요. 단, 본문에 그대로 적힌 게임/노래/"
+            "교재 이름은 따옴표로 인용 가능합니다.\n"
+            "④ 메타 설명(``아래와 같이 변환해 드릴게요`` 등) 절대 금지 — "
+            "바로 일기 본문만 답하세요.\n"
+            "⑤ 부모가 쓴 글(예: ``하린이는 어제 잘 놀았어요``)도 똑같이 "
+            "어린이 1인칭(``어제 잘 놀았어``)으로 변환.\n\n"
             "[예시 1 — 선생님 작성]\n"
             f"알림장: {topic}는 친구에게 장난감을 건네주며 사회성이 "
             "자라는 모습이었습니다.\n"
@@ -1299,6 +1348,16 @@ class NotionMirror:
             f"부모가 자녀({given})에게 쓰는 짧은 편지. 알림장에 나온 "
             "그날의 실제 사건 1-2개를 구체적으로 언급하면서, 자녀가 자라서 "
             "이 편지를 봤을 때 부모의 사랑이 전해지게 써. 2-3문장, 한국어.\n\n"
+            "**규칙 (반드시 지킬 것)**:\n"
+            "① **시점**: 부모(엄마/아빠)가 자녀(``너``)에게 쓰는 글. "
+            f"자녀가 부모에게 ``엄마 사랑해`` 같은 표현을 하지 마세요 — "
+            "이건 부모가 자녀에게 쓰는 편지입니다.\n"
+            "② **환각 금지**: 알림장에 없는 사건·사람·장소 만들지 마세요. "
+            "본문에 나온 활동만 인용.\n"
+            "③ **한국어만**: 본문에 영어 단어가 있어도 편지는 한국어로 의역. "
+            "교재 이름 같은 고유명사는 따옴표로 인용 가능.\n"
+            "④ **마무리**: 마지막 문장이 자연스럽게 끝나도록 (마침표·물음표·"
+            "느낌표 중 하나로). 잘리지 않게.\n\n"
             "[예시]\n"
             f"알림장: {topic}는 친구에게 장난감을 건네주며 사회성이 "
             "자라는 모습을 보였습니다. ``동물농장`` 노래에 박수를 쳤어요.\n"
@@ -1311,7 +1370,7 @@ class NotionMirror:
             "편지:"
         )
         return cls._ask_ollama(
-            prompt, max_chars=400, num_predict=160,
+            prompt, max_chars=600, num_predict=240,
             final_labels=("편지:",),
         )
 
@@ -1338,9 +1397,16 @@ class NotionMirror:
             "요약해. 활동·내용·중요 정보만 자연스럽게.\n\n"
             "**규칙**:\n"
             "① 반드시 한국어만 사용 — 중국어 한자(汉字) 절대 금지\n"
-            "② 본문에 영어 단어가 있어도 요약은 한국어로\n"
-            "③ 다른 설명·서두 없이 요약 한 줄만 답해\n\n"
-            f"본문: {text[:1500]}\n\n요약:"
+            "② 본문에 영어 단어(``exercise``, ``hiking`` 등)가 있어도 "
+            "요약은 한국어로 의역. 단어를 그대로 끼워넣지 말 것.\n"
+            "③ 문장은 마침표로 끝나야 하며 단어 단독으로 끝나거나 "
+            "쉼표 뒤에 영어 단어가 붙는 형태 금지 (예: ``운동, exercise``).\n"
+            "④ 다른 설명·서두 없이 요약 한 줄만 답해\n\n"
+            "[예시 — 영어 단어가 본문에 있는 경우]\n"
+            "본문: Today we learned about ``exercise``. Walking is "
+            "good for our heart. 친구들과 운동의 장점에 대해 얘기했어요.\n"
+            "요약: 운동의 장점과 걷기의 효능을 친구들과 함께 배웠다.\n\n"
+            f"[지금 요약할 본문]\n본문: {text[:1500]}\n\n요약:"
         )
         try:
             r = requests.post(
@@ -1756,7 +1822,12 @@ class NotionMirror:
         except Exception:
             return []
 
-    def _comment_blocks(self, comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _comment_blocks(
+        self,
+        comments: list[dict[str, Any]],
+        *,
+        scope: str = "report",
+    ) -> list[dict[str, Any]]:
         """Render a list of comments as a Notion heading + paragraphs.
 
         Each comment becomes:
@@ -1764,15 +1835,39 @@ class NotionMirror:
           - body text (chunked if long)
 
         author.type=='teacher' → 👩‍🏫,  parent → 👨‍👩‍👧.
+
+        ``scope``: ``"report"`` / ``"album"`` (default: child-private, all
+        comments rendered) vs ``"notice"`` (center-wide, parent comments
+        come from OTHER families and may contain other children's names
+        / schedules → those get filtered out to avoid leaking strangers'
+        personal data into this operator's Notion DB). Discovered
+        2026-05-22 reviewing the iibii_22 test backup: a notice's
+        comments listed 10 other students' names with scheduling info.
         """
         if not comments:
             return []
+        # Privacy filter — only applied on center-wide notices.
+        skipped_parents = 0
+        if scope == "notice":
+            kept: list[dict[str, Any]] = []
+            for c in comments:
+                atype = ((c.get("author") or {}).get("type") or "").lower()
+                if atype == "parent":
+                    skipped_parents += 1
+                    continue
+                kept.append(c)
+            comments = kept
+        if not comments and not skipped_parents:
+            return []
+        header_text = f"💬 댓글 ({len(comments)})"
+        if skipped_parents:
+            header_text += f"  · 다른 학부모 댓글 {skipped_parents}건은 개인정보 보호 위해 미수록"
         out: list[dict[str, Any]] = [{
             "object": "block",
             "type": "heading_3",
             "heading_3": {"rich_text": [{
                 "type": "text",
-                "text": {"content": f"💬 댓글 ({len(comments)})"},
+                "text": {"content": header_text},
             }]},
         }]
         for c in comments:
@@ -2013,9 +2108,11 @@ class NotionMirror:
             children = children[:insert_idx] + extras + children[insert_idx:]
 
         # Append comments (parent + teacher replies) at the very end.
+        # Reports are child-private (only THIS family + teachers participate),
+        # so comments are rendered in full — no privacy filter needed here.
         if report.get("num_comments"):
             comments = self._fetch_comments(kidsnote_sess, "reports", report_id)
-            children.extend(self._comment_blocks(comments))
+            children.extend(self._comment_blocks(comments, scope="report"))
 
         # Resolve property names on first publish (cached for subsequent calls).
         self._resolve_schema()
@@ -2215,9 +2312,14 @@ class NotionMirror:
                 })
 
         # ---- Append comments (parent + teacher replies) at the end ----
+        # comment_kind is `"notices"` or `"albums"`. Notices are center-wide
+        # so other parents' comments leak names/schedules/personal info →
+        # _comment_blocks with scope="notice" filters those out. Albums are
+        # child-specific so we treat them like reports (no filtering).
         if comment_kind and item.get("num_comments"):
             comments = self._fetch_comments(kidsnote_sess, comment_kind, item_id)
-            blocks.extend(self._comment_blocks(comments))
+            comment_scope = "notice" if comment_kind == "notices" else "album"
+            blocks.extend(self._comment_blocks(comments, scope=comment_scope))
 
         # ---- Create page ----
         self._resolve_schema()
@@ -3034,11 +3136,19 @@ class NotionMirror:
                 "한 단락(3-4문장)으로 작성하세요. 알림장에 실제 등장한 "
                 f"사건·활동·관찰 2-3개를 구체적으로 인용해야 합니다. "
                 f"자녀는 ``{topic}``로만 지칭하세요.\n\n"
-                "**규칙**:\n"
-                "① 한국어만 사용 (중국어 한자 금지)\n"
-                "② 알림장에 나오지 않은 사건·활동을 추가하지 마세요\n"
-                "③ 일반적·추상적 표현보다 알림장의 구체적 문구를 활용하세요\n"
-                "④ 다른 설명·서두 없이 본문만 답하세요\n\n"
+                "**규칙 (반드시 지킬 것)**:\n"
+                "① 한국어만 사용 (중국어 한자·독일어·기타 외국어 금지). "
+                "본문에 영어 단어(``exercise``, ``swimming`` 등)가 있어도 "
+                "스토리는 한국어로 의역. 영어 문장(``Am I a cat?`` 같은 게임 대사)은 "
+                "**인용하지 말고** 핵심을 한국어로 요약.\n"
+                "② **환각 금지**: 알림장에 나오지 않은 사건·활동·"
+                "사물·장소를 추가하지 마세요.\n"
+                "③ **다른 자녀 이름 익명화**: 본문에 다른 자녀 이름이 "
+                "나와도 (``성준이``, ``태민이``, ``민지`` 등) 그대로 쓰지 말고 "
+                "``친구`` 또는 ``반 친구들``로 바꿔 표현. 본인 자녀 "
+                f"({topic})만 실명으로 지칭.\n"
+                "④ 일반적·추상적 표현보다 알림장의 구체적 문구를 활용.\n"
+                "⑤ 다른 설명·서두 없이 본문만 답하세요.\n\n"
                 f"알림장 모음:\n{joined}\n\n"
                 "성장 스토리:"
             )
@@ -3138,7 +3248,10 @@ class NotionMirror:
                 "단서를 명사구 한 줄(20자 이내)로 뽑아. "
                 "**규칙**: ① 반드시 ``명사구``로만 답해 — ``~다``, "
                 "``~요``, ``~습니다``, ``~보였습니다`` 같은 종결어미 "
-                "절대 금지. ② 단서가 정말 없으면 ``없음``만 답해.\n\n"
+                "절대 금지. ② 단서가 정말 없으면 ``없음``만 답해. "
+                "③ 한국어만 사용 — 영어/독일어 등 외국어 단어를 명사구에 "
+                "끼워넣지 마세요 (``수영doing``, ``스티커arbeit`` 같은 형태 금지). "
+                "본문에 영어가 있어도 한국어로 의역하세요.\n\n"
                 "[예시 — 명사구 형식 ✓]\n"
                 f"알림장: {topic}가 친구에게 장난감을 건네주며 사회성이 "
                 "자라는 모습을 보였습니다.\n"
@@ -3242,9 +3355,13 @@ class NotionMirror:
                 "자녀가 이 기간 가장 좋아한 활동·사물·사람을 TOP 5로 정리해. "
                 "각 항목은 한 줄로 ``1. ... `` ``2. ...`` 형태로. "
                 f"{'자녀 이름은 ``' + given + '``.' if given else ''} "
-                "**규칙**: ① 한국어만 사용 (중국어 한자 금지). ② 알림장에 "
-                "실제 등장한 활동/사물/사람만 포함 — 없는 항목 추가 금지. "
-                "③ 다른 설명 없이 1~5번 목록만 답해.\n\n"
+                "**규칙**: ① 한국어만 사용 (중국어 한자·외국어 단어 금지). "
+                "② 알림장에 실제 등장한 활동/사물/사람만 포함 — 없는 항목 추가 금지. "
+                "③ 다른 자녀 이름이 본문에 있어도 그대로 쓰지 말고 "
+                "``친구`` 또는 ``반 친구들``로 표현 (개인정보 보호). "
+                "④ 표준 한국어 사용 — 본문에 ``열시미`` 같은 비표준 표기가 "
+                "있어도 표준어(``열심히``)로 교정. "
+                "⑤ 다른 설명 없이 1~5번 목록만 답해.\n\n"
                 f"알림장:\n{joined}\n\nTOP 5:"
             )
             top = self._ask_ollama(
@@ -3297,18 +3414,22 @@ class NotionMirror:
         given = _given_name(child_name) or "아이"
         topic = _topic_form(given)  # 하린→하린이 / 유주→유주
         prompt = (
-            f"다음은 어린이집 선생님이 자녀({given})에 대해 1년간 쓴 "
+            f"다음은 어린이집·학원 선생님이 자녀({given})에 대해 그동안 쓴 "
             "알림장의 짧은 발췌야. 이를 바탕으로 부모가 선생님께 보낼 "
             "감사 편지(4-5문장)를 한국어로 써. 발췌에 실제 등장한 활동·"
             "에피소드 2-3개를 구체적으로 언급해.\n\n"
+            "**규칙**: ① 한국어만 사용. ② 발췌에 없는 활동/사건 추가 금지. "
+            "③ 다른 자녀 이름이 본문에 있어도 ``친구``로 표현. "
+            f"④ 데이터 기간이 정확히 1년이 아닐 수 있으므로 ``한 해 동안`` "
+            "대신 ``그동안`` 같은 표현 사용.\n\n"
             "[예시]\n"
             f"발췌:\n- {topic}가 친구에게 장난감을 양보함\n"
             "- ``동물농장`` 노래에 박수\n- 송편 만들기에 참여\n"
-            f"편지: 선생님, 한 해 동안 우리 {topic}를 사랑으로 돌봐주셔서 "
+            f"편지: 선생님, 그동안 우리 {topic}를 사랑으로 돌봐주셔서 "
             "진심으로 감사드립니다. 친구에게 장난감을 양보하는 사회성도, "
             "``동물농장`` 노래에 박수를 치는 즐거움도, 송편을 만져보던 "
             f"낯선 촉감의 기억까지, 모두 선생님 덕분에 우리 {topic}의 "
-            "소중한 한 해가 되었습니다. 따뜻한 손길 잊지 않겠습니다.\n\n"
+            "소중한 추억이 되었습니다. 따뜻한 손길 잊지 않겠습니다.\n\n"
             "[지금 작성할 감사 편지]\n"
             f"발췌:\n{joined}\n"
             "편지:"

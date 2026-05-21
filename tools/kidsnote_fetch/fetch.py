@@ -898,9 +898,50 @@ def main(argv: list[str] | None = None) -> int:
 
     matched_menu_ids: set[int] = set()
 
-    # ---- Notion mirror: alimnota reports (already enriched above) -----
+    # ---- Pre-fetch notices + albums BEFORE publishing anything ---------
+    # The publish loop below is year-interleaved (one year's reports + albums
+    # + notices, then next year's, ...). To interleave we need all three
+    # lists fetched first; previously each list was fetched-then-published
+    # in turn, which made the final Notion view group by category instead
+    # of by year.
     notices: list[dict[str, Any]] = []
     albums: list[dict[str, Any]] = []
+    if mirror is not None and not args.no_notices and center_id:
+        try:
+            notices = _list_notices(sess, int(center_id))
+            if args.limit:
+                notices = notices[: args.limit]
+            _LOGGER.info("fetched %d notices for center id=%s", len(notices), center_id)
+        except Exception as e:
+            _LOGGER.warning("notice fetch failed: %s", e)
+    if mirror is not None and not args.no_albums:
+        try:
+            albums = _list_albums(sess, int(target["id"]))
+            if args.limit:
+                albums = albums[: args.limit]
+            _LOGGER.info("fetched %d albums for child id=%s", len(albums), target["id"])
+        except Exception as e:
+            _LOGGER.warning("album fetch failed: %s", e)
+
+    # ---- Notion mirror: year-interleaved publish ---------------------------
+    # User-requested ordering (2026-05-22): the default Notion view
+    # (Created time descending) should show:
+    #
+    #     [통계 대시보드 7개]
+    #     2026년 공지 (newest first)
+    #     2026년 앨범 (newest first)
+    #     2026년 알림장 (newest first)
+    #     2025년 공지
+    #     2025년 앨범
+    #     2025년 알림장
+    #     ...
+    #     2018년 알림장 (oldest)
+    #
+    # Because Notion `Created time desc` puts the LAST-published page at
+    # the top, we publish in reverse: oldest year first, and within each
+    # year reports → albums → notices (so notices land last for that
+    # year → top of that year's block in the default view). Dashboards
+    # are published after all data so they appear at the very top.
     if mirror is not None:
         def _publish_report(detail: dict[str, Any], sess_: requests.Session) -> dict[str, Any]:
             # Same-day menu is only embedded into TEACHER posts (alimnota
@@ -916,38 +957,38 @@ def main(argv: list[str] | None = None) -> int:
                     matched_menu_ids.add(int(attached_menu["id"]))
             return mirror.publish_report(detail, sess_, attached_menu=attached_menu)
 
-        # Publish chronologically (oldest first). Kidsnote returns most lists
-        # newest-first; flipping the order means a 6-hour cap that cuts off
-        # mid-run leaves the operator with a continuous, gap-free oldest→
-        # newest slice. Re-running just picks up where the previous one
-        # stopped via dedup, and the Notion view (이름 desc) keeps the
-        # newest entries at the top regardless of insertion order.
-        reports.sort(key=_chronological_key)
-        _publish_batch(reports, _publish_report, "Report")
+        def _year_of(item: dict[str, Any]) -> str:
+            raw = item.get("date_written") or item.get("created") or ""
+            return raw[:4] if len(raw) >= 4 else "0000"
 
-    # ---- Notion mirror: notices (center-wide) -----
-    if mirror is not None and not args.no_notices and center_id:
-        try:
-            notices = _list_notices(sess, int(center_id))
-            if args.limit:
-                notices = notices[: args.limit]
-            notices.sort(key=_chronological_key)
-            _LOGGER.info("fetched %d notices for center id=%s", len(notices), center_id)
-            _publish_batch(notices, mirror.publish_notice, "Notice")
-        except Exception as e:
-            _LOGGER.warning("notice fetch failed: %s", e)
+        from collections import defaultdict as _dd
+        reports_by_year: dict[str, list[dict[str, Any]]] = _dd(list)
+        notices_by_year: dict[str, list[dict[str, Any]]] = _dd(list)
+        albums_by_year: dict[str, list[dict[str, Any]]] = _dd(list)
+        for _r in reports:
+            reports_by_year[_year_of(_r)].append(_r)
+        for _n in notices:
+            notices_by_year[_year_of(_n)].append(_n)
+        for _a in albums:
+            albums_by_year[_year_of(_a)].append(_a)
 
-    # ---- Notion mirror: albums (per child) -----
-    if mirror is not None and not args.no_albums:
-        try:
-            albums = _list_albums(sess, int(target["id"]))
-            if args.limit:
-                albums = albums[: args.limit]
-            albums.sort(key=_chronological_key)
-            _LOGGER.info("fetched %d albums for child id=%s", len(albums), target["id"])
-            _publish_batch(albums, mirror.publish_album, "Album")
-        except Exception as e:
-            _LOGGER.warning("album fetch failed: %s", e)
+        all_years = sorted(
+            set(reports_by_year) | set(notices_by_year) | set(albums_by_year)
+        )
+        _LOGGER.info(
+            "Year-interleaved publish: %d year(s) total (%s)",
+            len(all_years), ", ".join(all_years) if all_years else "none",
+        )
+        for _year in all_years:
+            yr_reports = sorted(reports_by_year[_year], key=_chronological_key)
+            yr_albums = sorted(albums_by_year[_year], key=_chronological_key)
+            yr_notices = sorted(notices_by_year[_year], key=_chronological_key)
+            if yr_reports:
+                _publish_batch(yr_reports, _publish_report, f"Report {_year}")
+            if yr_albums:
+                _publish_batch(yr_albums, mirror.publish_album, f"Album {_year}")
+            if yr_notices:
+                _publish_batch(yr_notices, mirror.publish_notice, f"Notice {_year}")
 
     # ---- Daily menus are NOT published as standalone pages.
     # ---- Same-day menus are inlined into the matching report (above).
