@@ -325,6 +325,63 @@ def _strip_cjk(text: str) -> tuple[str, int]:
     return "".join(out_chars), removed
 
 
+def _english_word_leak_ratio(text: str) -> tuple[int, int]:
+    """Detect English words mixed into a Korean output.
+
+    Returns ``(word_count, longest_run)``. A "word" here is a run of
+    ASCII alphabet chars >= 3 (so 2-letter shorthand like cm/mg/PM
+    doesn't trigger). Threshold of 3 chars catches the production
+    case ``came`` (4 chars) without flagging legitimate quoted
+    proper nouns in real Korean text — those are rare and the
+    extracted run still has to be standalone (not part of a Korean
+    word).
+
+    Used to catch llama3.1:8b leaks like:
+        "오늘도 선생님께서는 우리 집에 전화해 came."
+    where "came" landed in the Korean output.
+    """
+    if not text:
+        return 0, 0
+    import re
+    # Match runs of ASCII letters bounded by non-letter on both sides.
+    # \b doesn't work well across Korean boundaries, so use lookarounds
+    # that explicitly require non-ASCII-letter neighbors.
+    words = re.findall(r"(?<![A-Za-z])[A-Za-z]{3,}(?![A-Za-z])", text)
+    if not words:
+        return 0, 0
+    return len(words), max(len(w) for w in words)
+
+
+def _looks_like_input_copy(output: str, input_text: str) -> bool:
+    """Detect when LLM copies a substantial chunk of input verbatim.
+
+    Caught a case where a parent self-introduction post got fed into
+    the child-diary prompt; llama3.1:8b gave up converting and just
+    echoed the first sentence ("반갑습니다 선생님 1202동 동대표
+    우석만입니다 잘 부탁드립니다."). That leaked the parent's full name
+    + apartment number into the Notion page.
+
+    Heuristic: if a 25-char run from the output's first 60 chars
+    appears in the input (whitespace + punctuation normalized), it's
+    a copy. Diaries should be a re-voicing, not a literal quotation.
+    Quoted curriculum names are fine because they're short (<25 chars).
+    """
+    if not output or not input_text or len(output) < 30:
+        return False
+    import re
+    # Strip punctuation + collapse whitespace so the LLM adding a
+    # period after the copied sentence doesn't fool the matcher.
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^\w\s가-힣]", "", s)).strip()
+    out_n = norm(output[:60])
+    body_n = norm(input_text)
+    if len(out_n) < 25:
+        return False
+    # Try the first 25-char window. If that's in the body, the LLM
+    # echoed a sentence verbatim.
+    return out_n[:25] in body_n
+
+
 def _safe_url(url: str) -> str:
     """Strip query string from a URL so signed-URL tokens never reach logs.
 
@@ -1393,10 +1450,17 @@ class NotionMirror:
         timeout: int = 120,
         final_labels: tuple[str, ...] = (),
         strip_meta: bool = True,
+        input_text: str = "",
     ) -> str | None:
         """Generic Ollama text-generation call. Returns None when Ollama
         isn't reachable or the response is empty / garbage. Output is
         stripped to a single contiguous block and capped at ``max_chars``.
+
+        ``input_text`` (optional): the source alimnota body. When supplied,
+        we extra-reject outputs that literally copy the input (a parent
+        self-introduction once leaked their full name + apartment number
+        into the child-diary callout because llama3.1:8b gave up
+        converting and just echoed the first sentence).
         """
         cfg = _get_ollama()
         if cfg is None:
@@ -1452,6 +1516,23 @@ class NotionMirror:
                 out = " ".join(out.split())
             if len(out) < 5:
                 last_reason = f"too_short({len(out)})"
+                continue
+            # English word leak guard: catches mid-Korean tokens like
+            # "전화해 came." (production 2026-05-22). Allow up to one
+            # ≤4-char alphabetic run (covers AM/PM/cm-style abbreviations
+            # and very short proper-noun acronyms). Reject anything with
+            # an alphabetic word ≥5 chars OR ≥2 alphabetic words.
+            eng_words, eng_longest = _english_word_leak_ratio(out)
+            if eng_longest >= 4 or eng_words >= 2:
+                last_reason = f"english_leak(words={eng_words},longest={eng_longest})"
+                continue
+            # Verbatim-input copy guard: if the output starts with text
+            # that appears as a contiguous substring in the source body,
+            # the model gave up converting and just echoed input. That
+            # has leaked parent names / addresses into the child-diary
+            # callout (production 2026-05-22).
+            if input_text and _looks_like_input_copy(out, input_text):
+                last_reason = "input_copy"
                 continue
             break  # success
         else:
@@ -1531,6 +1612,7 @@ class NotionMirror:
         return cls._ask_ollama(
             prompt, max_chars=350, num_predict=130,
             final_labels=("일기:",),
+            input_text=text,
         )
 
     @classmethod
@@ -1581,6 +1663,7 @@ class NotionMirror:
         return cls._ask_ollama(
             prompt, max_chars=600, num_predict=240,
             final_labels=("편지:",),
+            input_text=text,
         )
 
     @classmethod
@@ -1662,6 +1745,15 @@ class NotionMirror:
                 if len(first) < 5:
                     last_reason = "post_cjk_too_short"
                     continue
+            # English-leak filter — same as _ask_ollama
+            eng_words, eng_longest = _english_word_leak_ratio(first)
+            if eng_longest >= 4 or eng_words >= 2:
+                last_reason = f"english_leak(w={eng_words},l={eng_longest})"
+                continue
+            # Verbatim-input copy guard
+            if _looks_like_input_copy(first, text):
+                last_reason = "input_copy"
+                continue
             return first
         log.warning("summary giving up after retries (reason=%s)", last_reason)
         return None
