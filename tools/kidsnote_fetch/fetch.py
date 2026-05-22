@@ -999,6 +999,15 @@ def main(argv: list[str] | None = None) -> int:
             len(menus_fetched), len(matched_menu_ids), len(menus_fetched) - len(matched_menu_ids),
         )
 
+    # ---- Buffer before dashboards so Notion's Created time stamps each
+    # ---- dashboard distinctly after every alimnota / notice / album. Without
+    # ---- this, the millisecond-precision Created times sometimes interleave
+    # ---- a late album publish into the dashboard block under the default
+    # ---- desc sort, defeating the "all dashboards on top" layout.
+    if mirror is not None:
+        import time as _t
+        _t.sleep(2.0)
+
     # ---- 📊 Stats dashboard ----
     if mirror is not None and reports:
         _LOGGER.info("📊 Dashboard: computing stats from %d reports...", len(reports))
@@ -1054,6 +1063,12 @@ def main(argv: list[str] | None = None) -> int:
                          len(reports), len(cat_counter), len(monthly_counter))
         except Exception as e:
             _LOGGER.warning("dashboard publish failed: %s", e)
+        # Spacing between dashboards so their Created time stamps strictly
+        # increase, preserving the "all dashboards on top" layout under
+        # Notion's default Created-time-desc view. 0.5s is enough for the
+        # API to commit before the next page POST without bloating runtime.
+        import time as _t
+        _t.sleep(0.5)
 
     # ---- 📅 오늘의 추억 (Phase 2) ----
     if mirror is not None:
@@ -1117,6 +1132,8 @@ def main(argv: list[str] | None = None) -> int:
                          n, len(memories_by_year))
         except Exception as e:
             _LOGGER.warning("memories publish failed: %s", e)
+        import time as _t
+        _t.sleep(0.5)
 
     # ---- 🥗 영양 분석 (Phase 3) ----
     if mirror is not None and menus_fetched:
@@ -1161,6 +1178,8 @@ def main(argv: list[str] | None = None) -> int:
                          len(item_counter), len(group_counter))
         except Exception as e:
             _LOGGER.warning("nutrition publish failed: %s", e)
+        import time as _t
+        _t.sleep(0.5)
 
     # ---- 📖 매월 성장 스토리 / 🌟 마일스톤 / 🌱 분기 관심사 / 💌 감사 카드
     # ---- (LLM-driven; auto-skipped when Ollama isn't reachable) ----
@@ -1234,6 +1253,8 @@ def main(argv: list[str] | None = None) -> int:
                              "OK" if res else "FAILED (see WARNING above for cause)")
             except Exception as e:
                 _LOGGER.warning("growth story publish failed: %s", e)
+            import time as _t
+            _t.sleep(0.5)
 
         if skip_milestones:
             _LOGGER.info("🌟 Milestones: skipped (--no-milestones / DISABLE_MILESTONES)")
@@ -1250,6 +1271,8 @@ def main(argv: list[str] | None = None) -> int:
                              "OK" if res else "FAILED (see WARNING above for cause)")
             except Exception as e:
                 _LOGGER.warning("milestones publish failed: %s", e)
+            import time as _t
+            _t.sleep(0.5)
 
         if skip_interests:
             _LOGGER.info("🌱 Interests: skipped (--no-interests / DISABLE_INTERESTS)")
@@ -1266,6 +1289,8 @@ def main(argv: list[str] | None = None) -> int:
                              "OK" if res else "FAILED (see WARNING above for cause)")
             except Exception as e:
                 _LOGGER.warning("interests publish failed: %s", e)
+            import time as _t
+            _t.sleep(0.5)
 
         if skip_thanks:
             _LOGGER.info("💌 Teacher thanks: skipped (--no-teacher-thanks / DISABLE_TEACHER_THANKS)")

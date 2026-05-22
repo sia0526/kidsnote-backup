@@ -823,6 +823,30 @@ class NotionMirror:
         }
 
     @staticmethod
+    def _is_english_study_body(text: str) -> bool:
+        """Heuristic: detect alimnotas dominated by English vocabulary
+        practice (academy posts: "Today we learned about exercise.
+        The giraffe has a fur..."). In those bodies a child-voice diary
+        ("아 오늘은 ...") and a parent-voice letter ("유주야, 오늘...")
+        read awkwardly because the source itself is a teacher's lesson
+        log, not a daily activity narrative.
+
+        Returns True when ASCII letters make up at least 25% of the
+        non-whitespace characters AND the absolute count is non-trivial
+        (≥40 letters). Conservative — Korean alimnotas with one or two
+        English keywords don't trip it.
+        """
+        if not text:
+            return False
+        non_ws = [ch for ch in text if not ch.isspace()]
+        if len(non_ws) < 60:
+            return False
+        ascii_letters = sum(1 for ch in non_ws if "a" <= ch <= "z" or "A" <= ch <= "Z")
+        if ascii_letters < 40:
+            return False
+        return ascii_letters / len(non_ws) >= 0.25
+
+    @staticmethod
     def _ai_toggle(
         title: str,
         *,
@@ -910,6 +934,19 @@ class NotionMirror:
                 "본문이 짧거나, LLM이 한국어 외 언어로 답해서 자동 필터에 걸린 경우입니다. "
                 "다음 force-refresh에서 다시 시도됩니다."
             )
+            # English-academy alimnotas (vocabulary practice, drill sheets,
+            # etc.) read awkwardly as 1st-person diary / parent letter
+            # because the SOURCE is a teacher's lesson log, not a daily
+            # activity narrative. Detect via ASCII letter density and skip
+            # those two callouts with a clear placeholder; summary still
+            # runs because a Korean one-liner of "오늘 영어 수업에서 ...를
+            # 배웠다" is useful and not awkward.
+            is_english_study = self._is_english_study_body(body_for_summary)
+            _ENGLISH_SKIP_TEXT = (
+                "이 알림장은 영어 학습 내용 중심입니다. 1인칭 일기·부모 편지로 "
+                "변환하는 것이 어색해 AI 가공을 건너뛰었습니다. 원문에서 "
+                "선생님이 정리한 학습 내용을 직접 확인하세요."
+            )
 
             oneliner = self._summary_oneliner(body_for_summary)
             blocks.append(self._ai_toggle(
@@ -919,23 +956,37 @@ class NotionMirror:
                 emoji="💭", color="purple_background",
             ))
             # Child first-person diary
-            child_diary = self._child_voice_diary(body_for_summary, cname)
-            blocks.append(self._ai_toggle(
-                "🧒 자녀의 일기 (AI 가공 — 펼치기)" if child_diary
-                else "🧒 자녀의 일기 (AI 생성 실패 — 펼쳐서 확인)",
-                content=child_diary or _FALLBACK_TEXT,
-                emoji="🧒", color="yellow_background",
-            ))
+            if is_english_study:
+                blocks.append(self._ai_toggle(
+                    "🧒 자녀의 일기 (영어 학습 알림장 — AI 가공 생략)",
+                    content=_ENGLISH_SKIP_TEXT,
+                    emoji="🧒", color="yellow_background",
+                ))
+            else:
+                child_diary = self._child_voice_diary(body_for_summary, cname)
+                blocks.append(self._ai_toggle(
+                    "🧒 자녀의 일기 (AI 가공 — 펼치기)" if child_diary
+                    else "🧒 자녀의 일기 (AI 생성 실패 — 펼쳐서 확인)",
+                    content=child_diary or _FALLBACK_TEXT,
+                    emoji="🧒", color="yellow_background",
+                ))
             # Parent diary (imagined; works whether the report itself was
             # parent- or teacher-written — kidsnote shows the alimnota to
             # the family either way).
-            parent_diary = self._parent_voice_diary(body_for_summary, cname)
-            blocks.append(self._ai_toggle(
-                "👨‍👩‍👧 부모의 편지 (AI 가공 — 펼치기)" if parent_diary
-                else "👨‍👩‍👧 부모의 편지 (AI 생성 실패 — 펼쳐서 확인)",
-                content=parent_diary or _FALLBACK_TEXT,
-                emoji="👨‍👩‍👧", color="pink_background",
-            ))
+            if is_english_study:
+                blocks.append(self._ai_toggle(
+                    "👨‍👩‍👧 부모의 편지 (영어 학습 알림장 — AI 가공 생략)",
+                    content=_ENGLISH_SKIP_TEXT,
+                    emoji="👨‍👩‍👧", color="pink_background",
+                ))
+            else:
+                parent_diary = self._parent_voice_diary(body_for_summary, cname)
+                blocks.append(self._ai_toggle(
+                    "👨‍👩‍👧 부모의 편지 (AI 가공 — 펼치기)" if parent_diary
+                    else "👨‍👩‍👧 부모의 편지 (AI 생성 실패 — 펼쳐서 확인)",
+                    content=parent_diary or _FALLBACK_TEXT,
+                    emoji="👨‍👩‍👧", color="pink_background",
+                ))
 
         # Weather callout — only for teacher/admin posts (kidsnote auto-fills
         # weather on parent posts too, which would be misleading) and only
@@ -1147,6 +1198,38 @@ class NotionMirror:
         "다", "한", "두", "세", "넷", "막", "쭉", "푹", "쏙",
     })
 
+    @classmethod
+    def _extract_event_facts(cls, text: str, max_facts: int = 8) -> list[str]:
+        """Return a short list of concrete event-noun phrases that actually
+        appear in ``text``.
+
+        Used by the per-alimnota AI callouts to anchor the LLM: prompts
+        receive both the full body AND this explicit list, with
+        instructions to only use these facts. Without an anchor the
+        model invented details (e.g. shipping "린도라" — a non-existent
+        animal — into a child-voice diary). The anchor list narrows
+        the model's "what's in this alimnota" window.
+
+        Implementation reuses the existing kiwi/heuristic keyword
+        extractors (same NNG/NNP-only logic that drives report titles),
+        but caps to ``max_facts`` items and returns them as a list
+        instead of a comma-joined string.
+        """
+        if not text or len(text.strip()) < 30:
+            return []
+        kiwi = _get_kiwi()
+        # Reuse the same noun-extraction pipeline as the title keyword
+        # extractor, but split back into a list. Both kiwi and heuristic
+        # paths emit comma-joined output, so we just split it.
+        if kiwi is not None:
+            joined = cls._summarize_text_kiwi(kiwi, text, max_chars=400)
+        else:
+            joined = cls._summarize_text_heuristic(text, max_chars=400)
+        if not joined:
+            return []
+        parts = [p.strip() for p in joined.split(",") if p.strip()]
+        return parts[:max_facts]
+
     # Cache compiled patterns: each keyword turns into a Korean word-boundary
     # pattern so ``책`` does NOT match inside ``산책``.
     _CATEGORY_PATTERNS: list[tuple[str, list]] | None = None
@@ -1298,15 +1381,24 @@ class NotionMirror:
             return None
         given = _given_name(child_name) or "아이"
         topic = _topic_form(given)  # 하린→하린이 / 유주→유주
+        # Anchor list: nouns actually present in the body. Forces the LLM
+        # to draw from real events rather than inventing new ones — fixes
+        # the "린도라 동물" / "공원에서 놀았어" hallucination class.
+        facts = cls._extract_event_facts(text, max_facts=8)
+        facts_block = (
+            "\n[본문에서 확인된 사실 — 이 항목들만 사용]\n"
+            + "\n".join(f"- {f}" for f in facts)
+            + "\n"
+        ) if facts else ""
         prompt = (
             f"다음 어린이집 알림장을 자녀({given})의 1인칭 일기로 "
             "한국어 2-3문장으로 바꿔쓰세요.\n\n"
             "**규칙 (반드시 지킬 것)**:\n"
             "① ``나``가 주어. 선생님 호칭(``어머니~``, ``선생님께`` 등) 금지.\n"
             "② **환각 절대 금지**: 알림장 본문에 등장하지 않은 사건·활동·"
-            "동물·사람·장소·물건 이름을 만들어내지 마세요. 본문에 적힌 "
-            "사실만 1인칭으로 바꿔쓰세요. "
-            "(예: 본문에 ``공원``이 없으면 ``공원에서 놀았어`` 금지)\n"
+            "동물·사람·장소·물건 이름을 만들어내지 마세요. 아래 "
+            "``[본문에서 확인된 사실]`` 목록에 등장하는 사실만 1인칭으로 "
+            "재구성하세요. 그 외의 사물·사건을 추가하면 안 됩니다.\n"
             "③ 본문이 영어 단어(``swimming``, ``exercise`` 등)를 포함해도 "
             "일기는 한국어로 의역하세요. 단, 본문에 그대로 적힌 게임/노래/"
             "교재 이름은 따옴표로 인용 가능합니다.\n"
@@ -1322,6 +1414,7 @@ class NotionMirror:
             "[예시 2 — 부모 작성]\n"
             f"알림장: {topic}는 어제 잘 놀고 잘 먹었습니다. 콧물이 좀 났어요.\n"
             "일기: 어제 잘 놀고 밥도 잘 먹었어! 콧물이 좀 나서 답답했지만 괜찮아.\n\n"
+            f"{facts_block}"
             "[지금 변환할 알림장]\n"
             f"알림장: {text[:1200]}\n"
             "일기:"
@@ -1344,6 +1437,13 @@ class NotionMirror:
         addressee = _addressee(child_name)
         given = _given_name(child_name) or "아이"
         topic = _topic_form(given)  # 하린→하린이 / 유주→유주
+        # Same anchor strategy as _child_voice_diary.
+        facts = cls._extract_event_facts(text, max_facts=8)
+        facts_block = (
+            "\n[본문에서 확인된 사실 — 이 항목들만 인용]\n"
+            + "\n".join(f"- {f}" for f in facts)
+            + "\n"
+        ) if facts else ""
         prompt = (
             f"부모가 자녀({given})에게 쓰는 짧은 편지. 알림장에 나온 "
             "그날의 실제 사건 1-2개를 구체적으로 언급하면서, 자녀가 자라서 "
@@ -1352,8 +1452,8 @@ class NotionMirror:
             "① **시점**: 부모(엄마/아빠)가 자녀(``너``)에게 쓰는 글. "
             f"자녀가 부모에게 ``엄마 사랑해`` 같은 표현을 하지 마세요 — "
             "이건 부모가 자녀에게 쓰는 편지입니다.\n"
-            "② **환각 금지**: 알림장에 없는 사건·사람·장소 만들지 마세요. "
-            "본문에 나온 활동만 인용.\n"
+            "② **환각 금지**: 아래 ``[본문에서 확인된 사실]`` 목록에 "
+            "있는 사건만 인용. 그 외의 활동·사물·장소를 만들어내면 안 됩니다.\n"
             "③ **한국어만**: 본문에 영어 단어가 있어도 편지는 한국어로 의역. "
             "교재 이름 같은 고유명사는 따옴표로 인용 가능.\n"
             "④ **마무리**: 마지막 문장이 자연스럽게 끝나도록 (마침표·물음표·"
