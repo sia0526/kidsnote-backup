@@ -51,7 +51,7 @@ on:
       # other child's NAME (case-insensitive substring) to override.
       # Leave empty for single-child accounts.
       child_name:
-        description: "백업할 자녀 이름 일부 (예: '하린'). 자녀 1명이거나 첫 번째 자녀면 비워두세요"
+        description: "자녀 1명이면 비워두세요. 자녀 2명 이상이면 백업할 아이 이름 일부 입력 (예: '하린')"
         required: false
         default: ""
 
