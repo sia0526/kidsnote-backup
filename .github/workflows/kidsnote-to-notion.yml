@@ -51,7 +51,7 @@ on:
       # other child's NAME (case-insensitive substring) to override.
       # Leave empty for single-child accounts.
       child_name:
-        description: "백업할 자녀 이름 일부 (예: '유주'). 자녀 1명이거나 첫 번째 자녀면 비워두세요"
+        description: "백업할 자녀 이름 일부 (예: '하린'). 자녀 1명이거나 첫 번째 자녀면 비워두세요"
         required: false
         default: ""
 
@@ -63,7 +63,7 @@ on:
       # The yaml passthrough below inverts this back to the existing
       # DISABLE_ALL_LLM env var that fetch.py reads.
       use_ai_features:
-        description: "AI 가공 사용 (요약·자녀일기·부모편지·LLM 대시보드 4개). 끄려면 false → 단순 백업 + 통계 3개만 생성"
+        description: "AI 가공 통째로 — 알림장 안 callout 3개(💭본문요약·🧒자녀의일기·👨‍👩‍👧부모의편지) + 별도 페이지 4개(📖🌟🌱💌). false면 7개 모두 안 생성, 단순 백업 + 통계 3개(📊📅🥗)만"
         required: false
         default: "true"
         type: choice
@@ -74,27 +74,30 @@ on:
       # *all* 4 dashboards (some read awkwardly post-graduation), flip
       # the offending one to `false`. Default true = generate.
       # The master use_ai_features above wins — when it's `false`, these
-      # don't matter.
+      # don't matter. NOTE: these only control the standalone dashboard
+      # pages. The 3 per-alimnota callouts (요약·자녀일기·부모의편지)
+      # only turn off via use_ai_features=false, since they share the
+      # same Ollama pipeline.
       use_growth_story:
-        description: "📖 매월 성장 스토리 페이지 생성"
+        description: "📖 매월 성장 스토리 별도 페이지 생성 (알림장 안 callout과 무관)"
         required: false
         default: "true"
         type: choice
         options: ["true", "false"]
       use_milestones:
-        description: "🌟 우리 아이의 처음들 (마일스톤) 페이지 생성"
+        description: "🌟 우리 아이의 처음들(마일스톤) 별도 페이지 생성 (알림장 안 callout과 무관)"
         required: false
         default: "true"
         type: choice
         options: ["true", "false"]
       use_interests:
-        description: "🌱 분기별 관심사 페이지 생성"
+        description: "🌱 분기별 관심사 별도 페이지 생성 (알림장 안 callout과 무관)"
         required: false
         default: "true"
         type: choice
         options: ["true", "false"]
       use_teacher_thanks:
-        description: "💌 연도별 선생님께 감사 카드 페이지 생성"
+        description: "💌 연도별 선생님께 감사 카드 별도 페이지 생성 (알림장 안 callout과 무관)"
         required: false
         default: "true"
         type: choice
