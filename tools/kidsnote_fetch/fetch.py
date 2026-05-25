@@ -1356,7 +1356,12 @@ def main(argv: list[str] | None = None) -> int:
         # makes the worst case: 4 dashboards × DASHBOARD_PER_CAP_SEC.
         MIN_BUDGET_FAST = 60       # 1 min for quick dashboards
         MIN_BUDGET_SLOW = 900      # 15 min — heuristic for big LLM ones
-        DASHBOARD_PER_CAP = 18 * 60  # 18 min wall-clock cap per dashboard
+        # 2026-05-26: cap raised 18min → 45min. The previous 18min cap was
+        # halting growth_story at 4/15 months on a 15-month account, so
+        # only 2026 was covered and 2025 was permanently skipped (the
+        # singleton was overwritten by the partial result each cycle).
+        # 45min lets all 15 months finish in one pass on 8b CPU Ollama.
+        DASHBOARD_PER_CAP = 45 * 60  # 45 min wall-clock cap per dashboard
 
         def _set_dashboard_cap() -> None:
             # Each dashboard gets the smaller of (per-dashboard cap,

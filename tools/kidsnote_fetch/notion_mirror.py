@@ -2345,7 +2345,9 @@ class NotionMirror:
             tail = summary or f"알림장 #{report_id}"
 
         prefix_emojis = author_icon + (f" {w_emoji}" if w_emoji else "")
-        title = f"[{date_str}] 알림장: {prefix_emojis} {tail}"
+        # `_2 ` prefix groups alimnotas in the name-desc sort order below
+        # the dashboards (_5/_4) and albums (_3), above notices (_1).
+        title = f"_2 [{date_str}] 알림장: {prefix_emojis} {tail}"
 
         # Upload photos first so we can drop image blocks into the page body.
         image_upload_ids: list[str] = []
@@ -2739,7 +2741,8 @@ class NotionMirror:
             or datetime.now().date().isoformat()
         )
         nt = (notice.get("title") or "").strip()
-        title = f"[{date_str}] 공지: {nt}" if nt else f"[{date_str}] 공지 #{notice_id}"
+        # `_1 ` prefix sorts notices to the bottom in name-desc order.
+        title = f"_1 [{date_str}] 공지: {nt}" if nt else f"_1 [{date_str}] 공지 #{notice_id}"
         meta_bits: list[str] = []
         if notice.get("author_name"):
             meta_bits.append(f"작성 {notice['author_name']}")
@@ -2768,7 +2771,9 @@ class NotionMirror:
             or datetime.now().date().isoformat()
         )
         at = (album.get("title") or "").strip()
-        title = f"[{date_str}] 앨범: {at}" if at else f"[{date_str}] 앨범 #{album_id}"
+        # `_3 ` prefix sorts albums between dashboards (_5/_4) and
+        # alimnotas (_2) in name-desc order.
+        title = f"_3 [{date_str}] 앨범: {at}" if at else f"_3 [{date_str}] 앨범 #{album_id}"
         meta_bits: list[str] = []
         if album.get("author_name"):
             meta_bits.append(f"작성 {album['author_name']}")
@@ -2932,20 +2937,28 @@ class NotionMirror:
     # renamed entirely ("작년에 우리 아이는") because that phrasing reads
     # more like a family scrapbook header than a system label.
     DASHBOARD_REPORT_ID = -1
-    DASHBOARD_TITLE = "_ 📊 통계 대시보드"
+    # 2026-05-26: title prefix scheme for name-desc sort.
+    # Default Notion sort is name-desc; with these prefixes the
+    # categories cluster top-down in the requested order:
+    #   _5 통계 dashboards (3)
+    #   _4 AI dashboards   (4)
+    #   _3 앨범
+    #   _2 알림장
+    #   _1 공지
+    DASHBOARD_TITLE = "_5 📊 통계 대시보드"
     MEMORIES_REPORT_ID = -2
-    MEMORIES_TITLE = "_ 📅 작년추억"
+    MEMORIES_TITLE = "_5 📅 작년추억"
     NUTRITION_REPORT_ID = -3
-    NUTRITION_TITLE = "_ 🥗 영양 분석"
+    NUTRITION_TITLE = "_5 🥗 영양 분석"
     # LLM-driven storytelling pages (auto-skip when Ollama isn't reachable)
     GROWTH_STORY_REPORT_ID = -4
-    GROWTH_STORY_TITLE = "_ 📖 매월 성장 스토리"
+    GROWTH_STORY_TITLE = "_4 📖 매월 성장 스토리"
     MILESTONES_REPORT_ID = -5
-    MILESTONES_TITLE = "_ 🌟 우리 아이의 처음들 (마일스톤)"
+    MILESTONES_TITLE = "_4 🌟 우리 아이의 처음들 (마일스톤)"
     INTERESTS_REPORT_ID = -6
-    INTERESTS_TITLE = "_ 🌱 분기별 관심사"
+    INTERESTS_TITLE = "_4 🌱 분기별 관심사"
     TEACHER_THANKS_REPORT_ID = -7
-    TEACHER_THANKS_TITLE = "_ 💌 연도별 선생님께"
+    TEACHER_THANKS_TITLE = "_4 💌 연도별 선생님께"
 
     @classmethod
     def _dashboard_title(cls, template: str) -> str:
