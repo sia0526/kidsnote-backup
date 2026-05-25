@@ -1660,8 +1660,11 @@ class NotionMirror:
             f"알림장: {text[:1200]}\n"
             "일기:"
         )
+        # 2026-05-25: num_predict halved 130 → 70. 3-sentence diary fits
+        # comfortably in 70 tokens (~140-180 Korean chars) and the
+        # halved generation time roughly doubles publish throughput.
         return cls._ask_ollama(
-            prompt, max_chars=350, num_predict=130,
+            prompt, max_chars=350, num_predict=70,
             final_labels=("일기:",),
             input_text=text,
         )
@@ -1711,8 +1714,10 @@ class NotionMirror:
             f"알림장: {text[:1200]}\n"
             "편지:"
         )
+        # 2026-05-25: num_predict halved 240 → 120 for the same reason as
+        # the child diary — 2-3 sentence parent letter fits in 120 tokens.
         return cls._ask_ollama(
-            prompt, max_chars=600, num_predict=240,
+            prompt, max_chars=600, num_predict=120,
             final_labels=("편지:",),
             input_text=text,
         )

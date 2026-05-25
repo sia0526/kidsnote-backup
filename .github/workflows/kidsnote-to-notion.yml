@@ -109,8 +109,14 @@ on:
   # script tracks elapsed time and exits cleanly at 5h30m so the next
   # cron run can pick up via dedup. Once the backup is complete each
   # cron run finishes in ~1-2 minutes (no new alimnotas to process).
+  # 2026-05-25: cron interval widened 4h → 6h. Each cycle does ~5h work
+  # (publish loop + dashboards within the 6h GHA cap). At 4h interval,
+  # consecutive cycles queued up and the older ones got auto-cancelled —
+  # losing in-flight Notion commits and confusing operators ("backup
+  # stopped at date X"). At 6h interval, each cycle has time to drain
+  # before the next one fires.
   schedule:
-    - cron: "15 */4 * * *"
+    - cron: "15 */6 * * *"
 
 permissions:
   contents: read
