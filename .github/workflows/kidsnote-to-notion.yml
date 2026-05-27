@@ -174,18 +174,23 @@ jobs:
       # AI-opt-out runs don't pay the ~5min model-pull cost.
       # ``effective_ai`` resolves the master AI toggle for BOTH manual
       # dispatch AND cron schedule. On schedule events ``inputs.*`` is
-      # empty (since no one filled the form), so we fall back to the
-      # repo variable ``AI_FEATURES``. Set that variable to ``on`` once
-      # if you want cron to keep regenerating the 4 LLM dashboards.
+      # empty (since no one filled the form), so we fall back to a
+      # repo variable OR a repo secret named ``AI_FEATURES``. In
+      # practice operators add ``AI_FEATURES=on`` to whichever tab
+      # (Variables OR Secrets) they happen to land on — both work the
+      # same here. The value isn't sensitive (just ``on`` / ``off``),
+      # but the Secrets tab is where the existing tokens live so it
+      # gets used by muscle memory.
       - name: Resolve effective AI toggle
         id: ai
         env:
           INPUT_AI: ${{ inputs.use_ai_features }}
           REPO_VAR_AI: ${{ vars.AI_FEATURES }}
+          REPO_SECRET_AI: ${{ secrets.AI_FEATURES }}
         run: |
           if [ "$INPUT_AI" = "on" ]; then
             echo "value=on" >> "$GITHUB_OUTPUT"
-          elif [ -z "$INPUT_AI" ] && [ "$REPO_VAR_AI" = "on" ]; then
+          elif [ -z "$INPUT_AI" ] && { [ "$REPO_VAR_AI" = "on" ] || [ "$REPO_SECRET_AI" = "on" ]; }; then
             echo "value=on" >> "$GITHUB_OUTPUT"
           else
             echo "value=off" >> "$GITHUB_OUTPUT"

@@ -1142,15 +1142,17 @@ AI 가공을 받고 싶지만 4개 대시보드 중 일부는 빼고 싶으면 (
 
 1. 본인 fork repo → **`Settings`** 클릭
 2. 좌측 **`Secrets and variables` → `Actions`** 클릭
-3. 상단 탭에서 **`Variables`** 클릭 (Secrets 아닌 Variables 탭)
-4. **`New repository variable`** 클릭
-5. `Name`: **`AI_FEATURES`**, `Value`: **`on`** 입력 → `Add variable`
+3. 화면 위쪽에 탭 두 개 — **`Secrets`** 또는 **`Variables`** 둘 중 **아무 곳이나** 가능. (이미 `NOTION_TOKEN` 등을 추가한 `Secrets` 탭에 같이 두는 게 가장 편함)
+4. 초록 버튼 **`New repository secret`** (또는 `New repository variable`) 클릭
+5. `Name`: **`AI_FEATURES`** (대소문자·언더바 정확히), `Value`: **`on`** (소문자) → `Add`
 
 ✅ 이후로는 `Run workflow` 화면에서 `use_ai_features`를 안 만져도 (또는 cron이 자동으로 돌 때도) 항상 AI가 켜집니다.
 
-🔙 **다시 끄고 싶으면**: 같은 화면에서 `AI_FEATURES` 변수의 값을 `off`로 바꾸거나 변수 자체를 삭제.
+🔙 **다시 끄고 싶으면**: 같은 화면에서 `AI_FEATURES` 항목의 값을 `off`로 바꾸거나 항목 자체를 삭제.
 
-> 💡 **왜 굳이 Variables?** GitHub Actions의 `inputs.*` context는 사용자가 폼을 직접 채워야 채워지므로 **cron 이벤트에서는 항상 비어있음** → 디폴트(`off`)로 해석됨. Variables는 cron에서도 읽을 수 있는 영구 저장소라 이 갭을 메웁니다.
+> 💡 **왜 추가 항목이 필요한가요?** GitHub Actions의 `inputs.*` context는 사용자가 폼을 직접 채워야 채워지므로 **cron 이벤트에서는 항상 비어있음** → 디폴트(`off`)로 해석됨. Secrets / Variables는 cron에서도 읽을 수 있는 영구 저장소라 이 갭을 메웁니다.
+>
+> **Secrets vs Variables는 어느 쪽이든 OK** — `AI_FEATURES=on`은 비밀 값이 아니지만, 워크플로 코드가 두 탭 모두에서 읽도록 만들어져 있어요. 익숙한 곳에 그냥 두세요.
 
 <a id="상황별-권장-조합"></a>
 
