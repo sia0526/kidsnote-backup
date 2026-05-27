@@ -572,7 +572,15 @@ ACTIVITY_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
 # (first match wins); otherwise we fall back to the first property of the
 # right *type*.
 TITLE_NAME_CANDIDATES = ("Name", "이름", "제목")
-REPORT_ID_NAME_CANDIDATES = ("Report ID", "리포트 ID", "리포트id", "report_id", "보고서 ID")
+REPORT_ID_NAME_CANDIDATES = (
+    "Report ID", "리포트 ID", "리포트id", "report_id", "보고서 ID",
+    # Add casual short forms operators tend to type when reading the
+    # Quick Start guide: 번호 / 숫자. Without these the fallback
+    # "first Number property" path eventually catches it, but the
+    # error message users see when the wrong column name takes over
+    # is more confusing than just supporting both names directly.
+    "번호", "숫자", "Number", "id", "ID",
+)
 DATE_NAME_CANDIDATES = ("Date", "날짜")
 
 
